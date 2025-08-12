@@ -30,8 +30,8 @@ namespace recon {
  */
 struct MainReconstructorConfig {
     // 子模块配置
-    EnhancedUDFBuilderConfig udf_config;
-    UDFGraphCutIntegratorConfig integration_config;
+    EnhancedUDFConfig udf_config;
+    IntegrationConfig integration_config;
     DetailIntegrationConfig detail_config;
     FusionLegalizationConfig fusion_config;
     
@@ -317,6 +317,11 @@ private:
     // 性能监控
     std::chrono::high_resolution_clock::time_point start_time_;
     std::chrono::high_resolution_clock::time_point stage_start_time_;
+
+    // 在阶段间传递的辅助网格
+    openvdb::FloatGrid::Ptr last_confidence_grid_{}; // 图割需要的置信度网格
+    openvdb::Int32Grid::Ptr last_label_grid_{};       // 图割后的标签网格（可选）
+    openvdb::Int32Grid::Ptr last_refinement_grid_{};  // UDF细化级别网格（可选）
     
     /**
      * 初始化组件
@@ -357,7 +362,7 @@ private:
     /**
      * 更新统计信息
      */
-    void updateStatistics(const MainReconstructorResult& result);
+    void updateStatistics(MainReconstructorResult& result);
     
     /**
      * 记录阶段时间
@@ -365,12 +370,17 @@ private:
     void recordStageTime(ReconstructionStage stage, double time);
     
     /**
-     * 保存中间结果
+     * 保存中间结果（按阶段单个网格）
      */
     void saveIntermediateResult(
         const std::string& stage_name,
         const pcl::PolygonMesh& mesh
     );
+
+    /**
+     * 保存中间结果（完整结果打包）
+     */
+    void saveIntermediateResults(const MainReconstructorResult& result);
     
     /**
      * 保存调试信息

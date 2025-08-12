@@ -101,6 +101,8 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/fusion
     ${OPENVDB_INCLUDE_DIR}
 )
+# 允许示例中使用 "recon/src/..." 形式的包含路径
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # 源文件
 set(SOURCES
@@ -136,6 +138,31 @@ target_compile_definitions(pipeline PRIVATE
 
 # 安装规则
 install(TARGETS pipeline
+    RUNTIME DESTINATION bin
+)
+
+# 示例：主重建器驱动程序
+add_executable(recon_example examples/simple_reconstruction_example.cpp)
+
+target_link_libraries(recon_example PRIVATE
+    ${OPENVDB_LIBRARY}
+    ${PCL_LIBRARIES}
+    CGAL::CGAL
+    Eigen3::Eigen
+)
+if(TBB_FOUND)
+    target_link_libraries(recon_example PRIVATE TBB::tbb)
+endif()
+set_target_properties(recon_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    INSTALL_RPATH_USE_LINK_PATH TRUE
+)
+
+target_compile_definitions(recon_example PRIVATE
+    ${PCL_DEFINITIONS}
+)
+
+install(TARGETS recon_example
     RUNTIME DESTINATION bin
 )
 

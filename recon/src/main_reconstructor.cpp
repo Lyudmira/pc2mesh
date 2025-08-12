@@ -11,6 +11,8 @@
 #include <pcl/io/pcd_io.h>
 #include <pcl/common/common.h>
 #include <pcl/filters/statistical_outlier_removal.h>
+// 新增：双重轮廓头文件
+#include "dual_contouring/dual_contouring.h"
 
 namespace recon {
 
@@ -240,34 +242,32 @@ bool MainReconstructor::performReconstruction(
 bool MainReconstructor::performUDFBuilding(
     const PointCloudT::Ptr& input_cloud,
     GridT::Ptr& udf_grid) {
-    
     std::cout << "执行UDF构建..." << std::endl;
     auto stage_start = std::chrono::high_resolution_clock::now();
-    
     try {
         if (!udf_builder_) {
             std::cerr << "UDF构建器未初始化" << std::endl;
             return false;
         }
-        
-        // 执行UDF构建
-        EnhancedUDFResult udf_result;
-        if (!udf_builder_->buildUDF(input_cloud, udf_result)) {
+        // 使用增强版UDF构建接口
+        EnhancedUDFBuilder::ConfidenceGridT::Ptr confidence_grid;
+        EnhancedUDFBuilder::RefinementGridT::Ptr refinement_grid;
+        if (!udf_builder_->buildEnhancedUDF(input_cloud, udf_grid, confidence_grid, refinement_grid)) {
             std::cerr << "UDF构建失败" << std::endl;
             return false;
         }
-        
-        udf_grid = udf_result.udf_grid;
-        stats_.udf_voxels = udf_result.stats.total_voxels;
-        
+        // 保存供后续阶段使用
+        last_confidence_grid_ = confidence_grid;
+        // 保存细化网格以指导图割/双重轮廓
+        // 需要一个Int32Grid类型
+        last_refinement_grid_ = refinement_grid;
+        // 统计
+        stats_.udf_voxels = static_cast<int>(udf_grid->activeVoxelCount());
         auto stage_end = std::chrono::high_resolution_clock::now();
         stats_.udf_building_time = std::chrono::duration<double>(stage_end - stage_start).count();
-        
-        std::cout << "UDF构建完成，体素数: " << stats_.udf_voxels 
+        std::cout << "UDF构建完成，体素数: " << stats_.udf_voxels
                   << ", 时间: " << stats_.udf_building_time << " 秒" << std::endl;
-        
         return true;
-        
     } catch (const std::exception& e) {
         std::cerr << "UDF构建异常: " << e.what() << std::endl;
         return false;
@@ -278,37 +278,55 @@ bool MainReconstructor::performGraphCut(
     const PointCloudT::Ptr& input_cloud,
     const GridT::Ptr& udf_grid,
     pcl::PolygonMesh& shell_mesh) {
-    
     std::cout << "执行图割优化..." << std::endl;
     auto stage_start = std::chrono::high_resolution_clock::now();
-    
     try {
-        if (!graph_cut_integrator_) {
-            std::cerr << "图割集成器未初始化" << std::endl;
+        if (!udf_grid) {
+            std::cerr << "UDF网格无效" << std::endl;
             return false;
         }
-        
-        // 执行集成的图割优化
-        UDFGraphCutResult graph_cut_result;
-        if (!graph_cut_integrator_->performIntegratedGraphCut(
-                input_cloud, udf_grid, graph_cut_result)) {
+        if (!last_confidence_grid_) {
+            std::cerr << "缺少置信度网格，无法进行图割" << std::endl;
+            return false;
+        }
+        // 使用增强版图割求解器（带UDF集成）
+        EnhancedGraphCutSolver::GridT::Ptr result_grid;
+        EnhancedGraphCutSolver::GraphCutResult gc_result;
+        EnhancedGraphCutSolver solver;
+        if (!solver.solveWithUDFIntegration(
+                *udf_grid,
+                *last_confidence_grid_,
+                (last_refinement_grid_ ? *last_refinement_grid_ : *openvdb::Int32Grid::create(0)),
+                *input_cloud,
+                result_grid,
+                gc_result)) {
             std::cerr << "图割优化失败" << std::endl;
             return false;
         }
-        
-        shell_mesh = graph_cut_result.optimized_mesh;
+        // 将结果网格阈值化为标签网格
+        openvdb::Int32Grid::Ptr label_grid = openvdb::Int32Grid::create(0);
+        label_grid->setTransform(result_grid->transform().copy());
+        auto label_acc = label_grid->getAccessor();
+        for (auto it = result_grid->cbeginValueOn(); it; ++it) {
+            const float v = *it;
+            if (v > 0.5f) {
+                label_acc.setValue(it.getCoord(), 1);
+            }
+        }
+        // 使用双重轮廓提取外壳网格
+        DualContouringExtractor dc;
+        if (!dc.extractSurface(udf_grid, label_grid, input_cloud, shell_mesh)) {
+            std::cerr << "表面提取失败" << std::endl;
+            return false;
+        }
+        // 统计
         stats_.shell_vertices = static_cast<int>(shell_mesh.cloud.width * shell_mesh.cloud.height);
         stats_.shell_faces = static_cast<int>(shell_mesh.polygons.size());
-        stats_.graph_cut_nodes = graph_cut_result.stats.total_nodes;
-        
         auto stage_end = std::chrono::high_resolution_clock::now();
         stats_.graph_cut_time = std::chrono::duration<double>(stage_end - stage_start).count();
-        
-        std::cout << "图割优化完成，外壳面数: " << stats_.shell_faces 
+        std::cout << "图割优化完成，外壳面数: " << stats_.shell_faces
                   << ", 时间: " << stats_.graph_cut_time << " 秒" << std::endl;
-        
         return true;
-        
     } catch (const std::exception& e) {
         std::cerr << "图割优化异常: " << e.what() << std::endl;
         return false;
